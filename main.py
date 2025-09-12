@@ -1,227 +1,212 @@
+# Medical cost prediction (Manual implementation)
+
 import pandas as pd
 import numpy as np
 import warnings
 import matplotlib.pyplot as plt
-
-# Ignore FutureWarnings
+import seaborn as sns
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
-# Load the dataset
+# Load dataset
 df = pd.read_csv('insurance.csv')
 
-# BMI classifications
-
-
-def classify_bmi(bmi):
-    if bmi < 18.5:
-        return 'underweight'
-    elif bmi <= 24.9:
-        return 'normal weight'
-    elif bmi <= 29.9:
-        return 'overweight'
-    elif bmi <= 34.9:
-        return 'class 1 obesity'
-    elif bmi <= 39.9:
-        return 'class 2 obesity'
-    else:
-        return 'class 3 obesity'
-
-
-df['bmi_category'] = df['bmi'].apply(classify_bmi)
-
-# Mapping string values to numeric values
-string_replacements = {
-    'sex': {'male': 1, 'female': 2},
-    'bmi_category': {'underweight': 1, 'normal weight': 2, 'overweight': 3, 'class 1 obesity': 4, 'class 2 obesity': 5, 'class 3 obesity': 6},
-    'smoker': {'yes': 1, 'no': 2},
-    'region': {'northeast': 1, 'northwest': 2, 'southeast': 3, 'southwest': 4}
-}
-
-df.replace(string_replacements, inplace=True)
-
-# Drop bmi column, I'll be using the newly created bmi_category instead
-df.drop(columns=['bmi'], inplace=True)
+# One-hot encoding of categorical variables (replaces string_replacements)
+categorical_cols = ['sex', 'smoker', 'region']
+for col in categorical_cols:
+    dummies = pd.get_dummies(df[col], prefix=col)
+    df = pd.concat([df.drop(columns=[col]), dummies], axis=1)
 
 # Round all values to 2 decimal places
 df = df.round(2)
 
-# Applying winsorization to remove outliers at the top and bottom 5%
+# Winsorization on charges
 
 
 def winsorize_columns(df, columns):
     for col in columns:
-        lower_bound = df[col].quantile(0.05)
-        upper_bound = df[col].quantile(0.95)
-        df[col] = np.where(df[col] < lower_bound, lower_bound, df[col])
-        df[col] = np.where(df[col] > upper_bound, upper_bound, df[col])
+        lower = df[col].quantile(0.05)
+        upper = df[col].quantile(0.95)
+        df[col] = np.where(df[col] < lower, lower, df[col])
+        df[col] = np.where(df[col] > upper, upper, df[col])
     return df
 
 
-cols_to_winsorize = ['charges']
-df = winsorize_columns(df, cols_to_winsorize)
+df = winsorize_columns(df, ['charges'])
 
-# Divide into test and train DFs
-# print("Total rows according to .length: ", len(df)) Result: df was split correctly
-train_amount = int(len(df) * 0.7)
-train_df = df[:train_amount]
-test_df = df[train_amount:]
+# Split the data (70% train, 30% test)
+df = df.sample(frac=1, random_state=42).reset_index(drop=True)
+cut = int(len(df) * 0.7)
+train_df = df.iloc[:cut].copy()
+test_df = df.iloc[cut:].copy()
 
-# Gradient descent parameters
-train_data = train_df.drop(columns=["charges"])  # Dependant variables only
-y = train_df["charges"]  # Values to predict
+# Train/Test separation
+X_train = train_df.drop(columns=['charges']).copy()
+y_train = train_df['charges'].copy()
+X_test = test_df.drop(columns=['charges']).copy()
+y_test = test_df['charges'].copy()
 
-test_data = test_df.drop(columns=["charges"])
-y_test = test_df["charges"]
-
-# Normalize data before processing, using Min-Max scaling
+# Feature scaling
+train_data = X_train.copy()
+test_data = X_test.copy()
 cols_to_normalize = ['age', 'children']
-
 for col in cols_to_normalize:
-    min_val = train_data[col].min()
-    max_val = train_data[col].max()
-    train_data[col] = (train_data[col] - min_val) / (max_val - min_val)
-    test_data[col] = (test_data[col] - min_val) / (max_val - min_val)
+    if col in train_data.columns:
+        min_val = train_data[col].min()
+        max_val = train_data[col].max()
+        if max_val != min_val:
+            train_data[col] = (train_data[col] - min_val) / (max_val - min_val)
+            test_data[col] = (test_data[col] - min_val) / (max_val - min_val)
 
-# Normalizing y
-y_min = y.min()
-y_max = y.max()
-y = (y - y_min) / (y_max - y_min)
-y_test = (y_test - y_min) / (y_max - y_min)
+# Target (y)
+y = y_train.reset_index(drop=True)
+train_data = train_data.reset_index(drop=True)
+test_data = test_data.reset_index(drop=True)
 
-theta = np.zeros(train_data.shape[1])
-bias = y.mean()  # Starting bias is the mean of my train set
-learning_rate = 0.03
-epochs = 3000
-gradient = np.zeros(train_data.shape[1])
-error = []
+# Initialize parameters
+n_features = train_data.shape[1]
+theta = [0.0] * n_features
+bias = y.mean()
+learning_rate = 0.002
+epochs = 10000
+error_history = []
 
-# Here is where the GD training happens
-# Theta hypothesis
+# Correlation heatmap (optional diagnostic)
+corr = df.corr(numeric_only=True)
+plt.figure(figsize=(8, 6))
+sns.heatmap(corr, cmap="Greens", annot=True, fmt=".2f")
+plt.title("Correlation between features")
+plt.tight_layout()
+plt.show()
+
+# Hypothesis
 
 
-def hypothesis_theta(train_data, theta, bias):
-    prediction = 0
-    # print("train_data tolist: ", train_data.tolist())
-    for i in range(len(train_data)):
-        prediction += train_data[i] * theta[i]
-    prediction += bias
-    return prediction
+def hypothesis_theta(row_values, theta, bias):
+    pred = 0.0
+    for i in range(len(theta)):
+        pred += row_values[i] * theta[i]
+    return pred + bias
 
-# Mean Squared Error
+# Mean Squared Error (cost)
 
 
 def mse(train_data, theta, bias, y):
-    cost = 0
+    total = 0.0
     rows = len(train_data)
     for i in range(rows):
-        cost += (hypothesis_theta(
-            train_data.iloc[i].tolist(), theta, bias) - y[i]) ** 2
-    cost /= (2 * rows)
-    return cost
+        pred = hypothesis_theta(train_data.iloc[i].tolist(), theta, bias)
+        diff = pred - y.iloc[i]
+        total += diff * diff
+    return total / (2 * rows)
 
-# Get new values for our linear regressions independent variables
+# Update weights (batch gradient descent)
 
 
 def update_weights(train_data, theta, bias, y, learning_rate):
-    rows = len(train_data)  # m
-    features = len(theta)  # n
+    rows = len(train_data)
+    features = len(theta)
     theta_updated = list(theta)
-
-    theta_gradient = [0.0] * features
-    bias_gradient = 0
+    theta_grad = [0.0] * features
+    bias_grad = 0.0
 
     for i in range(rows):
-        error = hypothesis_theta(
-            train_data.iloc[i].tolist(), theta, bias) - y.iloc[i]
+        row_vals = train_data.iloc[i].tolist()
+        pred = hypothesis_theta(row_vals, theta, bias)
+        err = pred - y.iloc[i]
         for j in range(features):
-            theta_gradient[j] += error * train_data.iloc[i][j]
-        bias_gradient += error
+            theta_grad[j] += err * row_vals[j]
+        bias_grad += err
 
     for j in range(features):
-        theta_updated[j] -= (learning_rate / rows) * theta_gradient[j]
-    bias_updated = bias - (learning_rate / rows) * bias_gradient
-
+        theta_updated[j] -= (learning_rate / rows) * theta_grad[j]
+    bias_updated = bias - (learning_rate / rows) * bias_grad
     return theta_updated, bias_updated
 
 
-# Gradient Descent Loop
-i = 0
-while i < epochs:
-    curr_error = mse(train_data, theta, bias, y)
-    error.append(curr_error)
-    if curr_error <= 0.01:
+# Training loop
+epoch = 0
+while epoch < epochs:
+    curr_cost = mse(train_data, theta, bias, y)
+    error_history.append(curr_cost)
+    if curr_cost <= 0.01:
         break
     theta, bias = update_weights(train_data, theta, bias, y, learning_rate)
-    i += 1
+    epoch += 1
 
 print("Final Theta:", theta)
 print("Final Bias:", bias)
 
-result_df = pd.DataFrame([hypothesis_theta(
-    train_data.iloc[i].tolist(), theta, bias) for i in range(len(train_data))])
-plt.show()
+# Predictions on train
+_ = [hypothesis_theta(train_data.iloc[i].tolist(), theta, bias)
+     for i in range(len(train_data))]
 
-# Predictions with test_data
+train_predictions = []
+for i in range(len(train_data)):
+    train_predictions.append(hypothesis_theta(
+        train_data.iloc[i].tolist(), theta, bias))
+train_predictions = pd.Series(train_predictions)
+
+mse_train = np.mean((train_predictions.values - y.values) ** 2)
+ss_res_train = np.sum((y.values - train_predictions.values) ** 2)
+ss_tot_train = np.sum((y.values - y.mean()) ** 2)
+r2_train = 1 - ss_res_train / ss_tot_train
+print("Train set MSE:", mse_train)
+print("Train set R^2:", r2_train)
+
+# Predictions on test
 test_predictions = []
 for i in range(len(test_data)):
     test_predictions.append(hypothesis_theta(
         test_data.iloc[i].tolist(), theta, bias))
-test_predictions = pd.DataFrame(test_predictions)
+test_predictions = pd.Series(test_predictions)
 
-# Denormalize test predictions and real values
-test_predictions_denormalized = test_predictions * (y_max - y_min) + y_min
-y_test_denormalized = y_test * (y_max - y_min) + y_min
+# Metrics (original scale)
+mse_test = np.mean((test_predictions.values - y_test.values) ** 2)
+ss_res = np.sum((y_test.values - test_predictions.values) ** 2)
+ss_tot = np.sum((y_test.values - y_test.mean()) ** 2)
+r2 = 1 - ss_res / ss_tot
 
-# MSE on the test set
-mse_test = sum((test_predictions_denormalized.values.flatten(
-) - y_test_denormalized.values.flatten()) ** 2) / len(test_predictions_denormalized)
 print("Test set MSE:", mse_test)
-
-# Get R^2 in the test set
-ss_res = sum((y_test_denormalized.values.flatten() -
-             test_predictions_denormalized.values.flatten()) ** 2)
-ss_tot = sum((y_test_denormalized.values.flatten() -
-             y_test_denormalized.mean()) ** 2)
-r2 = 1 - (ss_res / ss_tot)
 print("Test set R^2:", r2)
-
-# Predictions vs Real values (test set)
+#
+# Plot: Real vs Predicted
 plt.figure(figsize=(8, 6))
-plt.scatter(range(len(y_test_denormalized)), y_test_denormalized,
-            color='blue', label='Real values (test)')
-plt.scatter(range(len(test_predictions_denormalized)),
-            test_predictions_denormalized, color='red', label='Predictions (test)')
-plt.title('Real values vs Predictions (Test set)')
+plt.scatter(range(len(y_test)), y_test, color='blue', label='Real (test)')
+plt.scatter(range(len(test_predictions)), test_predictions,
+            color='red', label='Predicted (test)')
+plt.title('Real vs Predicted (Test set)')
 plt.xlabel('Index')
 plt.ylabel('Charges')
 plt.legend()
+plt.tight_layout()
 plt.show()
 
-# Error convergence plot
-if len(error) < epochs:
-    error += [error[-1]] * (epochs - len(error))
-
+# Error convergence
+if len(error_history) < epochs:
+    error_history += [error_history[-1]] * (epochs - len(error_history))
 plt.figure(figsize=(8, 6))
-plt.plot(range(epochs), error, label='Cost Function (MSE)')
+plt.plot(range(epochs), error_history, label='Cost (MSE)')
 plt.title('Error Convergence')
-plt.xlabel('Epoch Number')
-plt.ylabel('Error')
+plt.xlabel('Epoch')
+plt.ylabel('Cost')
 plt.legend()
+plt.tight_layout()
 plt.show()
 
-# Data distributions
+# Distribution
 plt.figure(figsize=(10, 6))
 df['charges'].hist(bins=30)
 plt.title('Distribution of Charges')
 plt.xlabel('Charges')
 plt.ylabel('Frequency')
+plt.tight_layout()
 plt.show()
 
-# DataFrame information
+# Info
 print("DataFrame shape:", df.shape)
 print("\nDescriptive statistics:\n", df.describe())
 print("\nColumn info:")
 print(df.info())
-print("\nNumber of unique values per column:")
+print("\nUnique values per column:")
 print(df.nunique())
 print("\nFirst 5 rows:\n", df.head())
