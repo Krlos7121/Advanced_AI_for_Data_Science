@@ -10,30 +10,52 @@ import pandas as pd
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
-# Dataset load & preprocessing
+"""
+1. Data Loading & Preprocessing
+"""
+
 df = pd.read_csv('insurance.csv')
 
 # One-hot encoding of categorical variables (replaces string_replacements)
+# This creates binary columns for each category (e.g., sex_male, sex_female)
 categorical_cols = ['sex', 'smoker', 'region']
 df = pd.get_dummies(df, columns=categorical_cols, dtype=int)
 
+# Separate features (X) from target variable (y)
+X = df.drop(columns=["charges"])  # Keep: age, bmi, children, etc.
+y = df["charges"]  # Medical charges to predict
 
-# Train / test split (75% train, 25% test)
-X = df.drop(columns=["charges"])
-y = df["charges"]
+"""
+2. Data Splitting 
+Train/test split (75%/25%)
+"""
+
 X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=0.25, random_state=42
 )
 
-# K-Fold cross-validation for baseline decision tree
-base_tree = DecisionTreeRegressor(random_state=42)
+"""
+3. Baseline Model - Single Decision Tree
+"""
+
+# K-Fold cross-validation for baseline decision tree (only train set)
+base_tree = DecisionTreeRegressor(
+    random_state=42,
+    max_depth=10,
+    min_samples_leaf=4
+)
 kfold = KFold(n_splits=7, shuffle=True, random_state=42)
 cv_scores_neg = cross_val_score(
-    base_tree, X_train, y_train, cv=kfold, scoring='neg_mean_squared_error'
+    base_tree, X_train, y_train,
+    cv=kfold, scoring='neg_mean_squared_error'
 )
+
+# Convert negative MSE scores to positive
 cv_mse_scores = -cv_scores_neg
 print(f"Base Tree CV MSE scores: {cv_mse_scores}")
 print(f"Base Tree CV MSE mean: {cv_mse_scores.mean():.2f}")
+
+# Metric reporting function
 
 
 def report_regression(name, y_true, y_pred):
@@ -45,6 +67,10 @@ def report_regression(name, y_true, y_pred):
     return mse, rmse, mae, r2
 
 
+"""
+4. Bagging Model
+"""
+
 # Baseline Bagging (50 estimators)
 bagging = BaggingRegressor(
     estimator=DecisionTreeRegressor(
@@ -54,42 +80,61 @@ bagging = BaggingRegressor(
     random_state=42,
     n_jobs=1
 )
+# Training the bagging model
 bagging.fit(X_train, y_train)
-y_pred_test = bagging.predict(X_test)
-y_pred_train = bagging.predict(X_train)
 
+# Predictions on train and test
+y_pred_train = bagging.predict(X_train)
+y_pred_test = bagging.predict(X_test)
+
+"""
+5. Model Evaluation
+"""
+
+# Show estimations for each data subset
 print("\nBaseline Bagging (50 estimators):")
 train_mse_bag, _, _, train_r2_bag = report_regression(
     "Train", y_train, y_pred_train)
 test_mse_bag,  _, _, test_r2_bag = report_regression(
-    "Test",  y_test,  y_pred_test)
+    "Test", y_test, y_pred_test)
 
-# Fit base tree for comparison
+# Fit base tree for comparison (test set)
 base_tree.fit(X_train, y_train)
 y_pred_base = base_tree.predict(X_test)
 base_mse = mean_squared_error(y_test, y_pred_base)
 base_r2 = r2_score(y_test, y_pred_base)
 
-# Error curves: vary n_estimators and record train/test MSE
+"""
+6. Checking the effect of the number of estimators
+"""
+
+# Varying n_estimators and recording train/test MSE
 n_estimators_list = [5, 10, 15, 20, 30, 50, 100, 150, 200]
 train_mse_curve = []
 test_mse_curve = []
+
 for n_est in n_estimators_list:
     model = BaggingRegressor(
-        estimator=DecisionTreeRegressor(random_state=42),
+        estimator=DecisionTreeRegressor(
+            random_state=42, max_depth=10, min_samples_leaf=4),
         n_estimators=n_est,
         random_state=42,
         n_jobs=1
     )
+
     model.fit(X_train, y_train)
     pred_train_curve = model.predict(X_train)
     pred_test_curve = model.predict(X_test)
+
     train_mse_curve.append(mean_squared_error(y_train, pred_train_curve))
     test_mse_curve.append(mean_squared_error(y_test,  pred_test_curve))
 
-# Use the baseline bagging predictions for scatter plot
+# Baseline bagging predictions for scatter plot
 y_pred_final = y_pred_test
 
+"""
+7. Visualization
+"""
 # 2x2 Figure
 fig, axes = plt.subplots(2, 2, figsize=(14, 8))
 
@@ -118,7 +163,8 @@ axes[0, 1].legend()
 # Subplot 3: MSE comparison
 models = ['Base Tree', 'Bagging 50']
 mse_vals = [base_mse, test_mse_bag]
-bars = axes[1, 0].bar(models, mse_vals, color=['#888', '#1f77b4'])
+bars = axes[1, 0].bar(models, mse_vals,  color=[
+    'lightcoral', 'skyblue'])
 axes[1, 0].set_title('MSE Comparison (Test)')
 axes[1, 0].set_ylabel('MSE')
 for b in bars:
@@ -127,7 +173,8 @@ for b in bars:
 
 # Subplot 4: R^2 comparison
 r2_vals = [base_r2, test_r2_bag]
-bars2 = axes[1, 1].bar(models, r2_vals, color=['#888', '#1f77b4'])
+bars2 = axes[1, 1].bar(models, r2_vals, color=[
+    'lightcoral', 'skyblue'])
 axes[1, 1].set_title('R² Comparison (Test)')
 axes[1, 1].set_ylabel('R²')
 for b in bars2:
@@ -136,6 +183,10 @@ for b in bars2:
 
 plt.tight_layout()
 plt.show()
+
+"""
+8. Summary / Feature Importance
+"""
 
 # Feature importance averaged across bagging estimators
 feature_importances = np.mean(
